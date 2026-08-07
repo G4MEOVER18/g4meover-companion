@@ -15,6 +15,7 @@ import os
 import re
 import subprocess
 import sys
+import time
 
 # flipperbridge aus dem Nachbarordner importierbar machen
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "flipperbridge"))
@@ -103,6 +104,36 @@ def pull_captures(fb, src, dest, max_size, limit):
     return n
 
 
+def live_monitor(fb, interval, count):
+    """Selbst-aktualisierendes Dashboard (ANSI). count=0 -> endlos (Ctrl-C)."""
+    counts, app_total = count_apps(fb)  # einmalig (teuer)
+    i = 0
+    try:
+        while count == 0 or i < count:
+            info = fb.device_info()
+            total, free = storage_free(fb)
+            running = fb.loader_info().strip() or "Desktop"
+            sys.stdout.write("\033[2J\033[H")  # clear + home
+            print("G4MEOVER PI-DECK - LIVE")
+            print("=" * 40)
+            print(f"  {info.get('hardware_name','?')}  |  {info.get('firmware_version','?')}  "
+                  f"|  API {info.get('firmware_api_major','?')}.{info.get('firmware_api_minor','?')}")
+            print(f"  Radio : {info.get('radio_alive','?')}")
+            if total:
+                print(f"  SD    : {100*(total-free)/total:.1f}% belegt ({free} KiB frei)")
+            print(f"  App   : {running}")
+            print(f"  Apps  : {app_total} installiert  (GPIO {counts.get('GPIO',0)}, "
+                  f"Tools {counts.get('Tools',0)}, Sub-GHz {counts.get('Sub-GHz',0)})")
+            print(f"\n  Refresh {interval}s | Ctrl-C beendet")
+            sys.stdout.flush()
+            i += 1
+            if count and i >= count:
+                break
+            time.sleep(interval)
+    except KeyboardInterrupt:
+        print("\nbeendet.")
+
+
 def main():
     ap = argparse.ArgumentParser(description="G4MEOVER Pi-Deck Cockpit")
     ap.add_argument("-p", "--port", required=True)
@@ -110,6 +141,9 @@ def main():
     sub.add_parser("status")
     sub.add_parser("apps")
     sub.add_parser("dash")
+    lv = sub.add_parser("live", help="selbst-aktualisierendes Dashboard")
+    lv.add_argument("--interval", type=int, default=5)
+    lv.add_argument("--count", type=int, default=0, help="Anzahl Refreshes (0=endlos)")
     sp = sub.add_parser("pull", help="Text-Captures Flipper->PC ziehen")
     sp.add_argument("src", help="Flipper-Ordner, z.B. /ext/subghz")
     sp.add_argument("dest", help="lokales Zielverzeichnis")
@@ -142,6 +176,9 @@ def main():
         if cmd == "pull":
             print(f"PULL {args.src} -> {args.dest}")
             pull_captures(fb, args.src.rstrip("/"), args.dest, args.max_size, args.limit)
+            return
+        if cmd == "live":
+            live_monitor(fb, args.interval, args.count)
             return
         if cmd == "sync":
             idx = os.path.join(args.dest, "_idx")
