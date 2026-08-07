@@ -1,0 +1,216 @@
+#!/usr/bin/env python3
+"""G4MEOVER Web-Deck - Browser-Dashboard fuer den Flipper Zero.
+
+Dependency-frei (Python-Stdlib http.server + flipperbridge). Startet einen lokalen
+Webserver, der ein Live-Dashboard ausliefert und JSON-Endpunkte ueber die Bridge
+bedient: Geraete-/SD-/Radio-Status, App-Landschaft, SubGHz rx/tx.
+
+  python webdeck/webdeck.py -p COM3 [--host 127.0.0.1] [--port 8080]
+  Auf dem Pi: -p /dev/ttyACM0 --host 0.0.0.0   (dann im LAN erreichbar)
+
+Ein Serieller Port -> Anfragen werden serialisiert (Lock). Fuer Einzelnutzer gedacht.
+"""
+import argparse
+import json
+import os
+import re
+import sys
+import threading
+from http.server import BaseHTTPRequestHandler, HTTPServer
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "flipperbridge"))
+from flipperbridge import FlipperBridge  # noqa: E402
+
+CATS = ["Sub-GHz", "NFC", "RFID", "Infrared", "GPIO", "iButton",
+        "USB", "Bluetooth", "Games", "Media", "Tools"]
+
+_bridge = None
+_lock = threading.Lock()
+_apps_cache = None
+
+
+def _int(s):
+    m = re.search(r"(\d+)", s or "")
+    return int(m.group(1)) if m else 0
+
+
+def api_status():
+    with _lock:
+        info = _bridge.device_info()
+        txt = _bridge.cmd('storage info "/ext"')
+        running = _bridge.loader_info().strip() or "Desktop"
+    total = free = 0
+    for line in txt.splitlines():
+        if "total" in line:
+            total = _int(line)
+        elif "free" in line:
+            free = _int(line)
+    return {
+        "name": info.get("hardware_name", "?"),
+        "firmware": info.get("firmware_version", "?"),
+        "api": f"{info.get('firmware_api_major','?')}.{info.get('firmware_api_minor','?')}",
+        "radio": info.get("radio_alive", "?"),
+        "sd_total": total, "sd_free": free,
+        "sd_pct": round(100 * (total - free) / total, 1) if total else 0,
+        "running": running,
+    }
+
+
+def api_apps():
+    global _apps_cache
+    if _apps_cache is not None:
+        return _apps_cache
+    counts = {}
+    with _lock:
+        for cat in CATS:
+            out = _bridge.storage_list(f"/ext/apps/{cat}")
+            n = len(re.findall(r"\[F\].+\.fap", out))
+            if n:
+                counts[cat] = n
+    _apps_cache = {"counts": counts, "total": sum(counts.values())}
+    return _apps_cache
+
+
+def api_radio_rx(freq, seconds, device):
+    with _lock:
+        out = _bridge.stream(f"subghz rx {freq} {device}", seconds)
+    return {"output": out.strip()}
+
+
+def api_radio_tx(path, repeat, device):
+    with _lock:
+        out = _bridge.cmd(f'subghz tx_from_file "{path}" {repeat} {device}', 15)
+    return {"output": out.strip()}
+
+
+PAGE = """<!doctype html><html lang=de><head><meta charset=utf-8>
+<meta name=viewport content="width=device-width,initial-scale=1">
+<title>G4MEOVER Web-Deck</title><style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:#0a0a0a;color:#ff8200;font-family:ui-monospace,Consolas,monospace;padding:16px;line-height:1.5}
+h1{font-size:20px;letter-spacing:2px;border-bottom:1px solid #ff8200;padding-bottom:8px;margin-bottom:16px}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:14px}
+.card{background:#141414;border:1px solid #333;border-radius:8px;padding:14px}
+.card h2{font-size:12px;color:#888;text-transform:uppercase;letter-spacing:1px;margin-bottom:10px}
+.kv{display:flex;justify-content:space-between;font-size:14px;padding:2px 0}
+.kv b{color:#fff;font-weight:600}
+.bar{height:8px;background:#333;border-radius:4px;overflow:hidden;margin-top:4px}
+.bar>i{display:block;height:100%;background:#ff8200}
+.app{display:flex;align-items:center;gap:8px;font-size:13px;margin:3px 0}
+.app .n{width:60px}.app .b{flex:1;height:10px;background:#222;border-radius:3px;overflow:hidden}
+.app .b>i{display:block;height:100%;background:#ff8200}
+input,button{font-family:inherit;font-size:13px}
+input{background:#000;border:1px solid #444;color:#ff8200;padding:6px;border-radius:4px;width:120px}
+button{background:#ff8200;color:#000;border:0;padding:6px 12px;border-radius:4px;cursor:pointer;font-weight:600}
+button.ghost{background:#222;color:#ff8200;border:1px solid #444}
+pre{background:#000;border:1px solid #333;border-radius:4px;padding:8px;margin-top:8px;font-size:11px;color:#0f0;max-height:180px;overflow:auto;white-space:pre-wrap}
+.dot{display:inline-block;width:8px;height:8px;border-radius:50%;background:#0f0;margin-right:6px}
+small{color:#666}
+</style></head><body>
+<h1>&#9760; G4MEOVER WEB-DECK</h1>
+<div class=grid>
+ <div class=card><h2><span class=dot></span>Geraet</h2><div id=status>lade...</div></div>
+ <div class=card><h2>App-Landschaft</h2><div id=apps>lade...</div></div>
+ <div class=card><h2>SubGHz Radio</h2>
+   <div class=kv><span>Freq (Hz)</span><input id=freq value=433920000></div>
+   <div style=margin-top:8px>
+     <button onclick=rx()>RX Monitor 6s</button>
+     <button class=ghost onclick=tx()>TX from file</button>
+   </div>
+   <input id=txfile placeholder="/ext/subghz/x.sub" style=width:100%;margin-top:8px>
+   <pre id=radioout>bereit.</pre>
+   <small>RX = read-only. TX sendet (autorisierte Eigennutzung).</small>
+ </div>
+</div>
+<script>
+async function j(u,o){const r=await fetch(u,o);return r.json()}
+async function refresh(){
+ const s=await j('/api/status');
+ document.getElementById('status').innerHTML=
+  `<div class=kv><span>Name</span><b>${s.name}</b></div>`+
+  `<div class=kv><span>Firmware</span><b>${s.firmware}</b></div>`+
+  `<div class=kv><span>API</span><b>${s.api}</b></div>`+
+  `<div class=kv><span>Radio</span><b>${s.radio}</b></div>`+
+  `<div class=kv><span>App</span><b>${s.running}</b></div>`+
+  `<div class=kv><span>SD</span><b>${s.sd_pct}% belegt</b></div>`+
+  `<div class=bar><i style=width:${s.sd_pct}%></i></div>`;
+}
+async function loadApps(){
+ const a=await j('/api/apps');const m=Math.max(...Object.values(a.counts),1);
+ let h=`<div class=kv><span>Gesamt</span><b>${a.total}</b></div>`;
+ for(const[k,v]of Object.entries(a.counts).sort((x,y)=>y[1]-x[1]))
+  h+=`<div class=app><span class=n>${k}</span><span class=b><i style=width:${100*v/m}%></i></span><b>${v}</b></div>`;
+ document.getElementById('apps').innerHTML=h;
+}
+async function rx(){const f=document.getElementById('freq').value;
+ document.getElementById('radioout').textContent='RX '+f+' Hz, 6s...';
+ const r=await j('/api/radio/rx',{method:'POST',body:JSON.stringify({freq:+f,seconds:6,device:0})});
+ document.getElementById('radioout').textContent=r.output||'(kein Signal)';}
+async function tx(){const p=document.getElementById('txfile').value;if(!p)return;
+ document.getElementById('radioout').textContent='TX '+p+'...';
+ const r=await j('/api/radio/tx',{method:'POST',body:JSON.stringify({path:p,repeat:1,device:0})});
+ document.getElementById('radioout').textContent=r.output||'gesendet.';}
+refresh();loadApps();setInterval(refresh,5000);
+</script></body></html>"""
+
+
+class Handler(BaseHTTPRequestHandler):
+    def log_message(self, *a):
+        pass
+
+    def _send(self, code, body, ctype="application/json"):
+        data = body if isinstance(body, bytes) else body.encode("utf-8")
+        self.send_response(code)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+    def do_GET(self):
+        try:
+            if self.path == "/" or self.path.startswith("/index"):
+                return self._send(200, PAGE, "text/html; charset=utf-8")
+            if self.path == "/api/status":
+                return self._send(200, json.dumps(api_status()))
+            if self.path == "/api/apps":
+                return self._send(200, json.dumps(api_apps()))
+            self._send(404, json.dumps({"error": "not found"}))
+        except Exception as e:
+            self._send(500, json.dumps({"error": str(e)}))
+
+    def do_POST(self):
+        try:
+            length = int(self.headers.get("Content-Length", 0))
+            body = json.loads(self.rfile.read(length) or b"{}")
+            if self.path == "/api/radio/rx":
+                return self._send(200, json.dumps(api_radio_rx(
+                    int(body["freq"]), int(body.get("seconds", 6)), int(body.get("device", 0)))))
+            if self.path == "/api/radio/tx":
+                return self._send(200, json.dumps(api_radio_tx(
+                    body["path"], int(body.get("repeat", 1)), int(body.get("device", 0)))))
+            self._send(404, json.dumps({"error": "not found"}))
+        except Exception as e:
+            self._send(500, json.dumps({"error": str(e)}))
+
+
+def main():
+    global _bridge
+    ap = argparse.ArgumentParser(description="G4MEOVER Web-Deck")
+    ap.add_argument("-p", "--port-serial", required=True, dest="serial", help="COM3 / /dev/ttyACM0")
+    ap.add_argument("--host", default="127.0.0.1")
+    ap.add_argument("--port", type=int, default=8080)
+    args = ap.parse_args()
+
+    _bridge = FlipperBridge(args.serial)
+    print(f"G4MEOVER Web-Deck -> http://{args.host}:{args.port}  (Flipper @ {args.serial})")
+    srv = HTTPServer((args.host, args.port), Handler)
+    try:
+        srv.serve_forever()
+    except KeyboardInterrupt:
+        print("\nbeendet.")
+    finally:
+        _bridge.close()
+
+
+if __name__ == "__main__":
+    main()
