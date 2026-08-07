@@ -37,14 +37,16 @@ An 1373 .sub getestet → 896 einzigartig, 477 Duplikate erkannt.
 
 ### cockpit (`cockpit/cockpit.py`)
 Pi-Deck-Cockpit auf Basis von flipperbridge:
-- `dash` / `status` / `apps` — Live-Dashboard (Geräte-/Radio-/SD-Status + App-Landschaft je Kategorie).
-- `pull <flipper-ordner> <dest>` — Text-Captures Flipper→PC ziehen (für den vault-organizer-Index).
-- `radio rx <freq> [--seconds N]` — SubGHz-Monitor (read-only) · `radio decode <datei>` — RAW analysieren · `radio tx <datei>` — von .sub senden (autorisiert).
+- `dash` / `status` / `apps` — Momentaufnahme (Geräte-/Radio-/SD-Status + App-Landschaft je Kategorie).
+- `live [--interval N] [--count C]` — selbst-aktualisierendes Dashboard (ANSI).
+- `pull <flipper-ordner> <dest>` — Text-Captures Flipper→PC ziehen.
+- `sync <flipper-ordner> <dest>` — pull **+** vault-organizer-Index in einem Befehl.
+- `radio rx <freq> [--seconds N]` — SubGHz-Monitor (read-only) · `radio decode <datei>` · `radio tx <datei>` (autorisiert).
 ```
-python cockpit/cockpit.py -p /dev/ttyACM0 dash
-python cockpit/cockpit.py -p /dev/ttyACM0 radio rx 433920000 --seconds 8
+python cockpit/cockpit.py -p /dev/ttyACM0 live
+python cockpit/cockpit.py -p /dev/ttyACM0 sync /ext/subghz ./caps
 ```
-Live gegen COM3 getestet (Dashboard, Pull+Index, RX-Monitor).
+Alle Befehle live gegen COM3 getestet.
 
 ## Geplant
 - Cockpit-UI-Politur (TUI), Captures-DB, Report-Generator.
