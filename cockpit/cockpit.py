@@ -13,6 +13,7 @@ Auf dem Pi: -p /dev/ttyACM0
 import argparse
 import os
 import re
+import subprocess
 import sys
 
 # flipperbridge aus dem Nachbarordner importierbar machen
@@ -128,6 +129,12 @@ def main():
     r_tx.add_argument("--repeat", type=int, default=1)
     r_tx.add_argument("--device", type=int, default=0)
 
+    sy = sub.add_parser("sync", help="pull + Index in einem")
+    sy.add_argument("src", help="Flipper-Ordner, z.B. /ext/subghz")
+    sy.add_argument("dest", help="lokales Zielverzeichnis")
+    sy.add_argument("--max-size", type=int, default=16384)
+    sy.add_argument("--limit", type=int, default=0)
+
     args = ap.parse_args()
     cmd = args.cmd or "dash"
 
@@ -135,6 +142,15 @@ def main():
         if cmd == "pull":
             print(f"PULL {args.src} -> {args.dest}")
             pull_captures(fb, args.src.rstrip("/"), args.dest, args.max_size, args.limit)
+            return
+        if cmd == "sync":
+            idx = os.path.join(args.dest, "_idx")
+            print(f"SYNC {args.src} -> {args.dest}  (+ Index)")
+            n = pull_captures(fb, args.src.rstrip("/"), args.dest, args.max_size, args.limit)
+            if n:
+                organizer = os.path.join(os.path.dirname(__file__), "..", "vault-organizer", "vault_organizer.py")
+                print("\n-- Index --")
+                subprocess.run([sys.executable, organizer, args.dest, "--out", idx], check=False)
             return
         if cmd == "radio":
             if args.rcmd == "rx":
