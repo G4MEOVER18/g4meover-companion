@@ -53,6 +53,7 @@ Browser-Dashboard fürs Pi-Deck — **dependency-frei** (Python-Stdlib `http.ser
 - **Live-Status** (Gerät/SD/Radio, auto-refresh) + **App-Landschaft** (Balken je Kategorie).
 - **SubGHz** rx-Monitor (read-only) / tx from file (autorisiert).
 - **Captures-Browser**: „Sync now" zieht Captures vom Flipper, indiziert sie (vault-organizer) und zeigt sie filterbar mit Metadaten (Freq/Protokoll).
+- **Report** (`/report`): eigenständiger, druck-/speicherbarer HTML-Report — Zusammenfassung, Typ-Verteilung, Duplikat-Gruppen, Tabelle.
 ```
 python webdeck/webdeck.py -p /dev/ttyACM0 --host 0.0.0.0 --port 8080 --captures ./captures
 # dann im LAN: http://<pi-ip>:8080
