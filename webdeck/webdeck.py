@@ -11,6 +11,7 @@ bedient: Geraete-/SD-/Radio-Status, App-Landschaft, SubGHz rx/tx.
 Ein Serieller Port -> Anfragen werden serialisiert (Lock). Fuer Einzelnutzer gedacht.
 """
 import argparse
+import importlib.util
 import json
 import os
 import re
@@ -20,6 +21,15 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "flipperbridge"))
 from flipperbridge import FlipperBridge  # noqa: E402
+
+# vault-organizer (Ordnername mit Bindestrich -> per Pfad laden) fuer scan()
+_vo_path = os.path.join(os.path.dirname(__file__), "..", "vault-organizer", "vault_organizer.py")
+_vo_spec = importlib.util.spec_from_file_location("vault_organizer", _vo_path)
+vorg = importlib.util.module_from_spec(_vo_spec)
+_vo_spec.loader.exec_module(vorg)
+
+CAPTURES_DIR = "./captures"
+CAPTURE_EXTS = (".sub", ".nfc", ".rfid", ".ir")
 
 CATS = ["Sub-GHz", "NFC", "RFID", "Infrared", "GPIO", "iButton",
         "USB", "Bluetooth", "Games", "Media", "Tools"]
@@ -83,6 +93,40 @@ def api_radio_tx(path, repeat, device):
     return {"output": out.strip()}
 
 
+def api_captures():
+    """Indexiert den lokalen Captures-Ordner (vault-organizer) fuer die Browser-Ansicht."""
+    if not os.path.isdir(CAPTURES_DIR):
+        return {"rows": [], "total": 0, "unique": 0, "dupes": 0, "counts": {}}
+    rows, by_hash = vorg.scan(CAPTURES_DIR)
+    dupes = sum(len(v) - 1 for v in by_hash.values() if len(v) > 1)
+    counts = {}
+    for r in rows:
+        counts[r["type"]] = counts.get(r["type"], 0) + 1
+    return {"rows": rows, "total": len(rows), "unique": len(by_hash),
+            "dupes": dupes, "counts": counts}
+
+
+def api_sync(src, max_size, limit):
+    """Zieht Text-Captures vom Flipper in CAPTURES_DIR (fuer den Browser-Index)."""
+    n = skipped = 0
+    with _lock:
+        for full, size in _bridge.storage_walk(src.rstrip("/")):
+            if not full.lower().endswith(CAPTURE_EXTS):
+                continue
+            if size > max_size:
+                skipped += 1
+                continue
+            rel = full[len(src.rstrip("/")):].lstrip("/")
+            local = os.path.join(CAPTURES_DIR, rel.replace("/", os.sep))
+            os.makedirs(os.path.dirname(local) or ".", exist_ok=True)
+            with open(local, "w", encoding="utf-8", newline="\n") as f:
+                f.write(_bridge.storage_read(full))
+            n += 1
+            if limit and n >= limit:
+                break
+    return {"pulled": n, "skipped": skipped}
+
+
 PAGE = """<!doctype html><html lang=de><head><meta charset=utf-8>
 <meta name=viewport content="width=device-width,initial-scale=1">
 <title>G4MEOVER Web-Deck</title><style>
@@ -122,6 +166,15 @@ small{color:#666}
    <small>RX = read-only. TX sendet (autorisierte Eigennutzung).</small>
  </div>
 </div>
+<div class=card style=margin-top:14px>
+ <h2>Captures <small id=capstat></small></h2>
+ <div style=display:flex;gap:8px;margin-bottom:8px;flex-wrap:wrap>
+   <input id=capfilter placeholder=filtern... oninput=renderCaps() style=flex:1;width:auto;min-width:120px>
+   <input id=capsrc value=/ext/subghz style=width:130px>
+   <button onclick=syncNow()>Sync now</button>
+ </div>
+ <div id=captable><small>„Sync now" zieht Captures vom Flipper und indiziert sie.</small></div>
+</div>
 <script>
 async function j(u,o){const r=await fetch(u,o);return r.json()}
 async function refresh(){
@@ -150,7 +203,23 @@ async function tx(){const p=document.getElementById('txfile').value;if(!p)return
  document.getElementById('radioout').textContent='TX '+p+'...';
  const r=await j('/api/radio/tx',{method:'POST',body:JSON.stringify({path:p,repeat:1,device:0})});
  document.getElementById('radioout').textContent=r.output||'gesendet.';}
-refresh();loadApps();setInterval(refresh,5000);
+let _caps=[];
+function esc(s){return(s||'').replace(/[<>&]/g,c=>({'<':'&lt;','>':'&gt;','&':'&amp;'}[c]))}
+async function loadCaptures(){const d=await j('/api/captures');_caps=d.rows;
+ document.getElementById('capstat').textContent=`${d.total} Dateien | ${d.unique} unique | ${d.dupes} Dup`;
+ renderCaps();}
+function renderCaps(){const q=(document.getElementById('capfilter').value||'').toLowerCase();
+ const rows=_caps.filter(r=>!q||(r.file+r.detail+r.type).toLowerCase().includes(q)).slice(0,300);
+ if(!rows.length){document.getElementById('captable').innerHTML='<small>keine Treffer</small>';return;}
+ let h='<table style="width:100%;font-size:12px;border-collapse:collapse"><tr style="color:#888;text-align:left"><th>Datei<th>Typ<th>Detail</tr>';
+ for(const r of rows)h+=`<tr style="border-top:1px solid #222"><td style=padding:3px_4px>${esc(r.file)}<td>${r.type}<td>${esc(r.detail)}</tr>`;
+ document.getElementById('captable').innerHTML=h+'</table>';}
+async function syncNow(){const src=document.getElementById('capsrc').value;
+ document.getElementById('capstat').textContent='sync laeuft...';
+ const r=await j('/api/sync',{method:'POST',body:JSON.stringify({src,limit:50})});
+ await loadCaptures();
+ document.getElementById('capstat').textContent+=` (gezogen ${r.pulled})`;}
+refresh();loadApps();loadCaptures();setInterval(refresh,5000);
 </script></body></html>"""
 
 
@@ -174,6 +243,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, json.dumps(api_status()))
             if self.path == "/api/apps":
                 return self._send(200, json.dumps(api_apps()))
+            if self.path == "/api/captures":
+                return self._send(200, json.dumps(api_captures()))
             self._send(404, json.dumps({"error": "not found"}))
         except Exception as e:
             self._send(500, json.dumps({"error": str(e)}))
@@ -188,6 +259,10 @@ class Handler(BaseHTTPRequestHandler):
             if self.path == "/api/radio/tx":
                 return self._send(200, json.dumps(api_radio_tx(
                     body["path"], int(body.get("repeat", 1)), int(body.get("device", 0)))))
+            if self.path == "/api/sync":
+                return self._send(200, json.dumps(api_sync(
+                    body.get("src", "/ext/subghz"),
+                    int(body.get("max_size", 16384)), int(body.get("limit", 0)))))
             self._send(404, json.dumps({"error": "not found"}))
         except Exception as e:
             self._send(500, json.dumps({"error": str(e)}))
@@ -199,8 +274,11 @@ def main():
     ap.add_argument("-p", "--port-serial", required=True, dest="serial", help="COM3 / /dev/ttyACM0")
     ap.add_argument("--host", default="127.0.0.1")
     ap.add_argument("--port", type=int, default=8080)
+    ap.add_argument("--captures", default="./captures", help="lokaler Captures-Ordner (Browser-Index)")
     args = ap.parse_args()
 
+    global CAPTURES_DIR
+    CAPTURES_DIR = args.captures
     _bridge = FlipperBridge(args.serial)
     print(f"G4MEOVER Web-Deck -> http://{args.host}:{args.port}  (Flipper @ {args.serial})")
     srv = HTTPServer((args.host, args.port), Handler)

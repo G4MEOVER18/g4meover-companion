@@ -49,15 +49,18 @@ python cockpit/cockpit.py -p /dev/ttyACM0 sync /ext/subghz ./caps
 Alle Befehle live gegen COM3 getestet.
 
 ### webdeck (`webdeck/webdeck.py`)
-Browser-Dashboard fürs Pi-Deck — **dependency-frei** (Python-Stdlib `http.server` + flipperbridge, kein Flask). Live-Status, App-Landschaft, SubGHz rx/tx, G4MEOVER-Look. Endpunkte über die Bridge (serialisiert per Lock).
+Browser-Dashboard fürs Pi-Deck — **dependency-frei** (Python-Stdlib `http.server` + flipperbridge, kein Flask). G4MEOVER-Look. Endpunkte über die Bridge (serialisiert per Lock):
+- **Live-Status** (Gerät/SD/Radio, auto-refresh) + **App-Landschaft** (Balken je Kategorie).
+- **SubGHz** rx-Monitor (read-only) / tx from file (autorisiert).
+- **Captures-Browser**: „Sync now" zieht Captures vom Flipper, indiziert sie (vault-organizer) und zeigt sie filterbar mit Metadaten (Freq/Protokoll).
 ```
-python webdeck/webdeck.py -p /dev/ttyACM0 --host 0.0.0.0 --port 8080
+python webdeck/webdeck.py -p /dev/ttyACM0 --host 0.0.0.0 --port 8080 --captures ./captures
 # dann im LAN: http://<pi-ip>:8080
 ```
-Live getestet: /api/status, /api/apps, / (HTML).
+Live getestet: Status, Apps, Radio, Sync+Captures-Index.
 
 ## Geplant
-- Web-Deck: Capture-Browser + Report-Ansicht; Cockpit-Captures-DB.
+- Report-Export (PDF/HTML) aus dem Captures-Index; Cockpit-Captures-DB (persistent).
 
 ## Rahmen
 Alles defensiv / autorisiert. Keine fremden Kartendaten oder echten Zugangsdaten im Repo.
