@@ -11,6 +11,8 @@ bedient: Geraete-/SD-/Radio-Status, App-Landschaft, SubGHz rx/tx.
 Ein Serieller Port -> Anfragen werden serialisiert (Lock). Fuer Einzelnutzer gedacht.
 """
 import argparse
+import datetime
+import html
 import importlib.util
 import json
 import os
@@ -106,6 +108,50 @@ def api_captures():
             "dupes": dupes, "counts": counts}
 
 
+def report_html(generated):
+    """Eigenstaendiger, druckbarer HTML-Report aus dem Captures-Index (heller Print-Look)."""
+    d = api_captures()
+    rows = sorted(d["rows"], key=lambda r: (r["type"], r["file"]))
+    _, by_hash = vorg.scan(CAPTURES_DIR) if os.path.isdir(CAPTURES_DIR) else ([], {})
+    dup_groups = {h: v for h, v in by_hash.items() if len(v) > 1}
+
+    def esc(s):
+        return html.escape(str(s or ""))
+
+    types = "".join(f"<li><code>.{esc(t)}</code>: {n}</li>" for t, n in
+                    sorted(d["counts"].items(), key=lambda x: -x[1]))
+    trs = "".join(
+        f"<tr><td>{esc(r['file'])}</td><td>{esc(r['type'])}</td>"
+        f"<td>{esc(r['detail'])}</td><td class=h>{esc(r['hash'][:10])}</td></tr>"
+        for r in rows)
+    dups = "".join(
+        f"<li><code>{esc(h[:10])}</code> ({len(v)}x): {esc(', '.join(v))}</li>"
+        for h, v in sorted(dup_groups.items(), key=lambda x: -len(x[1]))) or "<li>keine</li>"
+
+    return f"""<!doctype html><html lang=de><head><meta charset=utf-8>
+<title>G4MEOVER Capture-Report</title><style>
+body{{font-family:ui-monospace,Consolas,monospace;max-width:900px;margin:24px auto;padding:0 16px;color:#111}}
+h1{{border-bottom:3px solid #ff8200;padding-bottom:8px}}
+h2{{color:#a35200;margin-top:24px;font-size:15px;text-transform:uppercase;letter-spacing:1px}}
+table{{width:100%;border-collapse:collapse;font-size:12px}}
+th,td{{text-align:left;padding:4px 6px;border-bottom:1px solid #ddd}}
+th{{background:#f4f4f4}} .h{{color:#999}}
+.sum{{display:flex;gap:24px;font-size:14px}} .sum b{{font-size:22px;display:block;color:#ff8200}}
+code{{background:#f4f4f4;padding:1px 4px;border-radius:3px}}
+small{{color:#888}} @media print{{h1{{color:#000}}}}
+</style></head><body>
+<h1>&#9760; G4MEOVER Capture-Report</h1>
+<small>Erstellt: {esc(generated)} &middot; Quelle: {esc(CAPTURES_DIR)}</small>
+<div class=sum style=margin-top:16px>
+ <div><b>{d['total']}</b>Dateien</div><div><b>{d['unique']}</b>einzigartig</div>
+ <div><b>{d['dupes']}</b>Duplikate</div></div>
+<h2>Nach Typ</h2><ul>{types}</ul>
+<h2>Duplikat-Gruppen</h2><ul>{dups}</ul>
+<h2>Alle Captures ({d['total']})</h2>
+<table><tr><th>Datei</th><th>Typ</th><th>Detail</th><th>Hash</th></tr>{trs}</table>
+</body></html>"""
+
+
 def api_sync(src, max_size, limit):
     """Zieht Text-Captures vom Flipper in CAPTURES_DIR (fuer den Browser-Index)."""
     n = skipped = 0
@@ -172,6 +218,7 @@ small{color:#666}
    <input id=capfilter placeholder=filtern... oninput=renderCaps() style=flex:1;width:auto;min-width:120px>
    <input id=capsrc value=/ext/subghz style=width:130px>
    <button onclick=syncNow()>Sync now</button>
+   <button class=ghost onclick="window.open('/report','_blank')">Report</button>
  </div>
  <div id=captable><small>„Sync now" zieht Captures vom Flipper und indiziert sie.</small></div>
 </div>
@@ -245,6 +292,9 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, json.dumps(api_apps()))
             if self.path == "/api/captures":
                 return self._send(200, json.dumps(api_captures()))
+            if self.path == "/report":
+                ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
+                return self._send(200, report_html(ts), "text/html; charset=utf-8")
             self._send(404, json.dumps({"error": "not found"}))
         except Exception as e:
             self._send(500, json.dumps({"error": str(e)}))
